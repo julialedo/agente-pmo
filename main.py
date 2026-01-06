@@ -317,7 +317,99 @@ def obter_cursos(subpasta_id=None):
     except Exception as e:
         st.warning(f"Erro ao obter cursos: {str(e)}")
         return []
-    
+
+def obter_todos_cursos_formatados():
+    """
+    Obtém todos os cursos do banco e formata para passar para a IA
+    """
+    try:
+        if not collection_cursos:
+            return "Nenhum curso disponível no banco de dados."
+        
+        todos_cursos = obter_cursos()
+        
+        if not todos_cursos:
+            return "Nenhum curso cadastrado no sistema."
+        
+        texto = "LISTA COMPLETA DE CURSOS DISPONÍVEIS:\n\n"
+        
+        for i, curso in enumerate(todos_cursos, 1):
+            titulo = curso.get('titulo', 'Curso sem título')
+            descricao = curso.get('descricao', 'Descrição não disponível')
+            duracao = curso.get('duracao', 'Duração não informada')
+            nivel = curso.get('nivel', 'Nível não informado')
+            tags = ", ".join(curso.get('tags', [])) if curso.get('tags') else "Sem tags"
+            link = curso.get('link_drive', 'Link não disponível')
+            
+            texto += f"{i}. {titulo}\n"
+            texto += f"   Descrição: {descricao}\n"
+            texto += f"   Nível: {nivel} | Duração: {duracao}\n"
+            texto += f"   Tags: {tags}\n"
+            texto += f"   Link: {link}\n\n"
+        
+        return texto
+        
+    except Exception as e:
+        return f"Erro ao obter cursos: {str(e)}"
+
+def selecionar_curso_com_ia(funcao, cargo, tasks_exemplo):
+    """
+    Usa o Gemini para analisar todos os cursos e selecionar o mais relevante
+    """
+    try:
+        if not modelo_texto:
+            return None
+        
+        # Obter todos os cursos formatados
+        cursos_texto = obter_todos_cursos_formatados()
+        
+        prompt = f"""
+        Você é um especialista em desenvolvimento de carreira e treinamento.
+        
+        ANALISE O PERFIL ABAIXO:
+        - Função: {funcao}
+        - Cargo: {cargo}
+        - Tasks/Responsabilidades: {tasks_exemplo}
+        
+        E ESTA LISTA COMPLETA DE CURSOS DISPONÍVEIS:
+        {cursos_texto}
+        
+        SUA TAREFA:
+        1. Analise o perfil profissional
+        2. Analise TODOS os cursos disponíveis
+        3. Selecione o CURSO MAIS RELEVANTE para este perfil
+        4. Retorne APENAS o número do curso escolhido (ex: "1", "2", "3")
+        
+        CRITÉRIOS DE SELEÇÃO:
+        - Relevância para a função
+        - Adequação ao nível do cargo
+        - Aplicabilidade nas tasks mencionadas
+        - Tags que correspondam ao perfil
+        
+        RETORNE APENAS O NÚMERO DO CURSO. Exemplo: "3"
+        """
+        
+        response = modelo_texto.generate_content(prompt)
+        numero_curso = response.text.strip()
+        
+        # Verificar se é um número válido
+        if numero_curso.isdigit():
+            # Obter cursos novamente para pegar o curso correto
+            todos_cursos = obter_cursos()
+            idx = int(numero_curso) - 1  # Converter para índice 0-based
+            
+            if 0 <= idx < len(todos_cursos):
+                return todos_cursos[idx]
+        
+        # Se falhou, retornar o primeiro curso
+        todos_cursos = obter_cursos()
+        return todos_cursos[0] if todos_cursos else None
+        
+    except Exception as e:
+        st.warning(f"⚠️ Erro ao selecionar curso com IA: {str(e)}")
+        # Fallback: retornar primeiro curso
+        todos_cursos = obter_cursos()
+        return todos_cursos[0] if todos_cursos else None    
 
 # --- FUNÇÕES PARA PLAYBOOK ---
 def processar_playbook(agente_id, instrucao_usuario, base_conhecimento_atual, elemento_tipo="base_conhecimento"):
@@ -1005,6 +1097,33 @@ def generate_knowledge_flowchart(nome, equipe, funcao, cargo, tasks_exemplo, mod
         return None, None, "❌ API key do Gemini não configurada."
     
     try:
+        # === USAR IA PARA SELECIONAR CURSO ===
+        curso_recomendado = selecionar_curso_com_ia(funcao, cargo, tasks_exemplo)
+        
+        # Formatar informações do curso para o prompt
+        info_curso = ""
+        if curso_recomendado:
+            titulo = curso_recomendado.get('titulo', 'Curso')
+            descricao = curso_recomendado.get('descricao', 'Descrição não disponível')
+            duracao = curso_recomendado.get('duracao', 'Duração não informada')
+            nivel = curso_recomendado.get('nivel', 'Nível não informado')
+            link = curso_recomendado.get('link_drive', '')
+            
+            info_curso = f"""
+            
+            CURSO RECOMENDADO (SELECIONADO PELA IA BASEADO NO PERFIL):
+            
+            Título: {titulo}
+            Descrição: {descricao}
+            Nível: {nivel}
+            Duração: {duracao}
+            Link de acesso: {link}
+            
+            INSTRUÇÃO: No final da descrição da trilha, adicione uma seção "🎯 Curso Recomendado" 
+            explicando por que este curso é importante para o perfil do colaborador e como ele 
+            complementa a trilha de conhecimento. Use as informações acima.
+            """
+        
         prompt = f"""
         Você é um especialista em Desenvolvimento Organizacional e Design Instrucional.
         Crie uma TRILHA DE CONHECIMENTO como FLUXOGRAMA para:
@@ -1014,6 +1133,8 @@ def generate_knowledge_flowchart(nome, equipe, funcao, cargo, tasks_exemplo, mod
         FUNÇÃO: {funcao}
         CARGO: {cargo}
         EXEMPLO DE TASKS: {tasks_exemplo}
+        
+        {info_curso}
         
         ### ESTRUTURA DO FLUXOGRAMA:
         1. INÍCIO: Ponto de partida
@@ -1069,12 +1190,13 @@ def generate_knowledge_flowchart(nome, equipe, funcao, cargo, tasks_exemplo, mod
             "texto_descritivo": "Texto explicativo em markdown..."
         }}
         
-        ### REGRAS:
+        ### REGRAS IMPORTANTES:
         - Máximo 12 módulos
         - Organize em 4-5 níveis verticais
         - Inclua decisões (sim/não) para diferentes caminhos
         - Adicione loops de feedback
         - Seja prático e realista
+        - {f"NO FINAL do texto_descritivo, ADICIONE uma seção '🎯 Curso Recomendado' com o curso acima" if curso_recomendado else ""}
         """
         
         if modelo == "gemini":
@@ -1099,22 +1221,81 @@ def generate_knowledge_flowchart(nome, equipe, funcao, cargo, tasks_exemplo, mod
                 data = json.loads(json_match.group(1))
                 texto_descritivo = data.get("texto_descritivo", response_text)
                 
+                # Se não tem curso na descrição e temos curso recomendado, adicionar
+                if curso_recomendado and "Curso Recomendado" not in texto_descritivo:
+                    titulo = curso_recomendado.get('titulo', 'Curso')
+                    descricao = curso_recomendado.get('descricao', '')
+                    duracao = curso_recomendado.get('duracao', '')
+                    nivel = curso_recomendado.get('nivel', '')
+                    link = curso_recomendado.get('link_drive', '')
+                    
+                    curso_section = f"""
+                    
+## 🎯 Curso Recomendado
+
+Para complementar sua trilha como **{funcao} ({cargo})**, recomendamos o curso:
+
+**{titulo}**
+
+{descricao}
+
+📊 **Nível:** {nivel}
+⏱️ **Duração:** {duracao}
+
+**Por que este curso é importante para você?**
+- Desenvolvido especificamente para profissionais da área de {funcao.split()[0].lower() if funcao.split() else 'sua área'}
+- Complementa diretamente as habilidades necessárias para suas tasks: {tasks_exemplo[:100]}...
+- Oferece conhecimentos práticos que você pode aplicar imediatamente no trabalho
+
+{f"🔗 **Acesse o curso aqui:** [{link}]({link})" if link else "📚 Disponível na nossa biblioteca de cursos"}
+"""
+                    data["texto_descritivo"] = texto_descritivo + curso_section
+                    texto_descritivo = data["texto_descritivo"]
+                
                 # Gerar fluxograma visual
                 flowchart_image = create_flowchart_diagram(data, nome, funcao)
                 
                 return data, flowchart_image, texto_descritivo
-            except:
+            except Exception as json_error:
+                st.warning(f"⚠️ Erro no JSON: {str(json_error)}")
                 # Criar fluxograma genérico
                 texto_descritivo = response_text
+                if curso_recomendado:
+                    # Adicionar curso mesmo sem JSON
+                    titulo = curso_recomendado.get('titulo', 'Curso')
+                    descricao = curso_recomendado.get('descricao', '')
+                    link = curso_recomendado.get('link_drive', '')
+                    
+                    texto_descritivo += f"\n\n## 🎯 Curso Recomendado\n\n"
+                    texto_descritivo += f"**{titulo}**\n\n"
+                    texto_descritivo += f"{descricao}\n\n"
+                    if link:
+                        texto_descritivo += f"🔗 Acesse: {link}"
+                
                 flowchart_image = create_generic_flowchart(nome, funcao, tasks_exemplo)
                 return None, flowchart_image, texto_descritivo
         else:
             texto_descritivo = response_text
+            if curso_recomendado:
+                # Adicionar curso mesmo sem JSON
+                titulo = curso_recomendado.get('titulo', 'Curso')
+                descricao = curso_recomendado.get('descricao', '')
+                link = curso_recomendado.get('link_drive', '')
+                
+                texto_descritivo += f"\n\n## 🎯 Curso Recomendado\n\n"
+                texto_descritivo += f"**{titulo}**\n\n"
+                texto_descritivo += f"{descricao}\n\n"
+                if link:
+                    texto_descritivo += f"🔗 Acesse: {link}"
+            
             flowchart_image = create_generic_flowchart(nome, funcao, tasks_exemplo)
             return None, flowchart_image, texto_descritivo
             
     except Exception as e:
         return None, None, f"❌ Erro ao gerar fluxograma: {str(e)}"
+
+
+
 
 def create_flowchart_diagram(data, nome, funcao):
     """Cria um fluxograma visual profissional a partir dos dados"""
@@ -1421,6 +1602,58 @@ def get_knowledge_paths(limit=10):
             return []
 
 
+
+def gerar_resposta_especialista_curso(pergunta, curso_selecionado, historico_conversa=None):
+    """
+    Gera resposta como especialista do curso usando Gemini
+    """
+    try:
+        if not modelo_texto or not curso_selecionado:
+            return "❌ Configuração não disponível"
+        
+        # Extrair informações do curso
+        titulo = curso_selecionado.get('titulo', 'Curso')
+        descricao = curso_selecionado.get('descricao', 'Descrição não disponível')
+        nivel = curso_selecionado.get('nivel', 'Nível não informado')
+        tags = curso_selecionado.get('tags', [])
+        
+        # Construir contexto do especialista
+        contexto_especialista = f"""
+        Você é um especialista no curso: "{titulo}"
+        
+        INFORMAÇÕES DO CURSO:
+        - Título: {titulo}
+        - Descrição: {descricao}
+        - Nível: {nivel}
+        - Tags/Áreas: {', '.join(tags) if tags else 'Não especificado'}
+        
+        SUA PERSONALIDADE:
+        - Especialista com profundo conhecimento no assunto
+        - Professor paciente e didático
+        - Explica conceitos complexos de forma simples
+        - Dá exemplos práticos e aplicações reais
+        - Incentiva o aprendizado contínuo
+        
+        REGRAS:
+        1. Responda APENAS sobre o assunto do curso
+        2. Se a pergunta não for sobre o curso, explique educadamente que só pode falar sobre esse tópico
+        3. Use analogias e exemplos para facilitar o entendimento
+        4. Relacione o conteúdo com aplicações práticas
+        5. Sugira exercícios ou práticas quando apropriado
+        
+        HISTÓRICO DA CONVERSA:
+        {historico_conversa if historico_conversa else 'Primeira pergunta'}
+        """
+        
+        # Montar prompt completo
+        prompt_completo = f"{contexto_especialista}\n\nPERGUNTA DO ALUNO: {pergunta}\n\nRESPOSTA DO ESPECIALISTA:"
+        
+        # Gerar resposta
+        response = modelo_texto.generate_content(prompt_completo)
+        return response.text
+        
+    except Exception as e:
+        return f"❌ Erro ao gerar resposta: {str(e)}"
 
 
 # --- Interface Principal ---
@@ -2568,7 +2801,7 @@ with tab_mapping["🎓 Cursos e Capacitações"]:
     st.markdown("Cursos organizados em pastas: **Categoria → Subpasta → Cursos**")
     
     # Abas simples
-    tab_explorar, tab_buscar, tab_admin = st.tabs(["📁 Explorar Pastas", "🔍 Buscar Cursos", "⚙️ Admin"])
+    tab_explorar, tab_buscar, tab_admin, tab_chat = st.tabs(["📁 Explorar Pastas", "🔍 Buscar Cursos", "⚙️ Admin", "🤖 Chat com Especialista"])
     
     with tab_explorar:
         # Botão para admin verificar estrutura
@@ -2976,3 +3209,185 @@ with tab_mapping["🎓 Cursos e Capacitações"]:
                             
                 except Exception as e:
                     st.error(f"❌ Erro ao obter dados brutos: {str(e)}")
+
+
+
+    with tab_chat:
+        st.subheader("🤖 Chat com Especialista do Curso")
+        st.markdown("Selecione um curso e converse com um especialista no assunto!")
+        
+        # Inicializar session state para o chat do curso
+        if 'chat_curso_messages' not in st.session_state:
+            st.session_state.chat_curso_messages = []
+        
+        if 'curso_selecionado_chat' not in st.session_state:
+            st.session_state.curso_selecionado_chat = None
+        
+        # Layout em duas colunas
+        col_curso, col_chat = st.columns([1, 2])
+        
+        with col_curso:
+            st.markdown("#### 📚 Selecione um Curso")
+            
+            # Campo de busca rápida
+            busca_curso = st.text_input("🔍 Buscar curso:", 
+                                       placeholder="Digite palavras-chave...",
+                                       key="busca_curso_chat_especialista")
+            
+            # Obter cursos
+            todos_cursos = obter_cursos()
+            
+            if not todos_cursos:
+                st.info("Nenhum curso disponível no momento.")
+            else:
+                # Filtrar por busca se houver
+                cursos_filtrados = todos_cursos
+                if busca_curso:
+                    cursos_filtrados = [
+                        curso for curso in todos_cursos
+                        if busca_curso.lower() in curso.get('titulo', '').lower() or
+                        busca_curso.lower() in curso.get('descricao', '').lower() or
+                        (curso.get('tags') and any(busca_curso.lower() in tag.lower() for tag in curso.get('tags', [])))
+                    ]
+                
+                if not cursos_filtrados:
+                    st.info("Nenhum curso encontrado. Tente outros termos.")
+                else:
+                    # Lista de cursos para seleção
+                    for curso in cursos_filtrados[:8]:  # Limitar a 8 resultados
+                        titulo = curso.get('titulo', 'Curso sem título')
+                        descricao = curso.get('descricao', '')[:80] + "..."
+                        nivel = curso.get('nivel', '')
+                        
+                        # Card do curso
+                        with st.container(border=True):
+                            st.markdown(f"**{titulo}**")
+                            st.caption(descricao)
+                            st.caption(f"📊 {nivel}")
+                            
+                            if st.button("💬 Conversar", key=f"chat_curso_{curso.get('_id')}", 
+                                        use_container_width=True):
+                                st.session_state.curso_selecionado_chat = curso
+                                st.session_state.chat_curso_messages = []  # Limpar conversa anterior
+                                st.success(f"✅ Especialista de '{titulo}' pronto!")
+                                st.rerun()
+            
+            # Mostrar curso selecionado atual
+            if st.session_state.curso_selecionado_chat:
+                st.divider()
+                st.markdown("#### 📖 Curso Selecionado")
+                curso = st.session_state.curso_selecionado_chat
+                st.markdown(f"**{curso.get('titulo')}**")
+                st.caption(curso.get('descricao', '')[:120] + "...")
+                
+                col_info1, col_info2 = st.columns(2)
+                with col_info1:
+                    st.caption(f"📊 {curso.get('nivel', '')}")
+                with col_info2:
+                    st.caption(f"⏱️ {curso.get('duracao', '')}")
+                
+                if curso.get('link_drive'):
+                    st.link_button("▶️ Assistir Curso", curso['link_drive'], 
+                                  use_container_width=True)
+                
+                # Botão para limpar seleção
+                if st.button("🗑️ Trocar Curso", type="secondary", use_container_width=True):
+                    st.session_state.curso_selecionado_chat = None
+                    st.session_state.chat_curso_messages = []
+                    st.rerun()
+        
+        with col_chat:
+            st.markdown("#### 💬 Conversa com o Especialista")
+            
+            # Verificar se há curso selecionado
+            if not st.session_state.curso_selecionado_chat:
+                st.info("👈 Selecione um curso para começar a conversar!")
+                st.markdown("""
+                ### 💡 Como funciona:
+                1. **Selecione um curso** da lista à esquerda
+                2. **Faça perguntas** sobre o conteúdo do curso
+
+                """)
+            else:
+                curso = st.session_state.curso_selecionado_chat
+                st.markdown(f"**Especialista em:** {curso.get('titulo')}")
+                
+                # Área do chat
+                chat_container = st.container(height=350, border=True)
+                
+                with chat_container:
+                    # Exibir histórico da conversa
+                    for message in st.session_state.chat_curso_messages:
+                        if message["role"] == "user":
+                            with st.chat_message("user"):
+                                st.markdown(message["content"])
+                        else:
+                            with st.chat_message("assistant"):
+                                st.markdown(message["content"])
+                
+                # Input para nova pergunta
+                pergunta = st.chat_input(f"Pergunte sobre {curso.get('titulo')}...")
+                
+                if pergunta:
+                    # Adicionar pergunta ao histórico
+                    st.session_state.chat_curso_messages.append({
+                        "role": "user", 
+                        "content": pergunta
+                    })
+                    
+                    # Exibir pergunta
+                    with chat_container:
+                        with st.chat_message("user"):
+                            st.markdown(pergunta)
+                    
+                    # Gerar resposta
+                    with st.spinner(f"Especialista pensando..."):
+                        # Formatar histórico para contexto
+                        historico_formatado = ""
+                        for msg in st.session_state.chat_curso_messages[-4:]:  # Últimas 4 mensagens
+                            role = "Aluno" if msg["role"] == "user" else "Especialista"
+                            historico_formatado += f"{role}: {msg['content']}\n"
+                        
+                        # Usar a função que já criamos
+                        resposta = gerar_resposta_especialista_curso(
+                            pergunta,
+                            curso,
+                            historico_formatado
+                        )
+                        
+                        # Adicionar resposta ao histórico
+                        st.session_state.chat_curso_messages.append({
+                            "role": "assistant", 
+                            "content": resposta
+                        })
+                        
+                        # Exibir resposta
+                        with chat_container:
+                            with st.chat_message("assistant"):
+                                st.markdown(resposta)
+                
+                # Botões de controle
+                col_ctrl1, col_ctrl2 = st.columns(2)
+                with col_ctrl1:
+                    if st.button("🗑️ Limpar Chat", use_container_width=True):
+                        st.session_state.chat_curso_messages = []
+                        st.rerun()
+                with col_ctrl2:
+                    if st.button("📥 Exportar Conversa", use_container_width=True):
+                        # Criar texto da conversa para exportar
+                        texto_conversa = f"Chat com Especialista - {curso.get('titulo')}\n"
+                        texto_conversa += f"Data: {datetime.datetime.now().strftime('%d/%m/%Y %H:%M')}\n"
+                        texto_conversa += "=" * 50 + "\n\n"
+                        
+                        for msg in st.session_state.chat_curso_messages:
+                            role = "Aluno" if msg["role"] == "user" else "Especialista"
+                            texto_conversa += f"{role}: {msg['content']}\n\n"
+                        
+                        # Botão de download
+                        st.download_button(
+                            label="📄 Baixar Conversa",
+                            data=texto_conversa,
+                            file_name=f"chat_{curso.get('titulo', 'curso').replace(' ', '_')}.txt",
+                            mime="text/plain",
+                            use_container_width=True
+                        )
