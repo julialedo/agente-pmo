@@ -31,7 +31,7 @@ import base64
 from io import BytesIO
 import matplotlib.patches as patches
 import numpy as np
-
+import urllib.parse
 load_dotenv()
 
 # Configuração inicial
@@ -97,6 +97,29 @@ collection_usuarios = db['usuarios']  # Nova coleção para usuários
 collection_playbook_logs = db['playbook_logs']  # Nova coleção para logs do playbook
 
 
+try:
+    client_cursos = MongoClient(
+        "mongodb+srv://julialedo_db_user:hr7vHI5EjMwuRT9X@cluster0.u0sm02b.mongodb.net/cursos_db?retryWrites=true&w=majority&appName=Cluster0",
+        tls=True,
+        tlsAllowInvalidCertificates=True,
+        serverSelectionTimeoutMS=10000
+    )
+    
+    # Testar conexão
+    client_cursos.admin.command('ping')
+    
+    db_cursos = client_cursos['cursos_db']
+    collection_cursos = db_cursos['cursos']
+    collection_categorias = db_cursos['categorias']
+    
+    print("✅ Conexão com banco de cursos estabelecida!")
+    
+except Exception as e:
+    st.error(f"❌ Erro na conexão com banco de cursos: {str(e)}")
+    # Criar variáveis vazias para evitar erros
+    db_cursos = None
+    collection_cursos = None
+    collection_categorias = None
 
 
 # --- FUNÇÕES DE CADASTRO E LOGIN ---
@@ -173,7 +196,7 @@ def get_current_squad():
 
 def login():
     """Formulário de login e cadastro"""
-    st.title("🔒 Agente Social - Login")
+    st.title("🔒 Agente PMO - Login")
     
     tab_login, tab_cadastro = st.tabs(["Login", "Cadastro"])
     
@@ -234,6 +257,67 @@ if "logged_in" not in st.session_state:
 if not st.session_state.logged_in:
     login()
     st.stop()
+
+
+
+# --- FUNÇÕES PARA CURSOS ---
+def inicializar_cursos_base():
+    """Inicializa a estrutura de cursos no banco de dados"""
+    try:
+        # Verificar se a conexão está disponível
+        if not collection_categorias:
+            return False, "❌ Conexão com banco de cursos não disponível"
+        
+        # Verificar se já existe alguma categoria
+        if collection_categorias.count_documents({}) == 0:
+            return True, "✅ Estrutura de cursos já existe!"
+        else:
+            return True, "✅ Estrutura de cursos já existe!"
+            
+    except Exception as e:
+        return False, f"❌ Erro ao verificar cursos: {str(e)}"
+
+def obter_categorias():
+    """Retorna todas as categorias de cursos"""
+    try:
+        if not collection_categorias:
+            return []
+        return list(collection_categorias.find(
+            {"tipo": "categoria", "ativo": True}
+        ).sort("ordem", 1))
+    except Exception as e:
+        st.warning(f"Erro ao obter categorias: {str(e)}")
+        return []
+
+def obter_subpastas(categoria_id):
+    """Retorna subpastas de uma categoria"""
+    try:
+        if not collection_categorias:
+            return []
+        return list(collection_categorias.find({
+            "tipo": "subpasta", 
+            "categoria_id": categoria_id,
+            "ativo": True
+        }).sort("ordem", 1))
+    except Exception as e:
+        st.warning(f"Erro ao obter subpastas: {str(e)}")
+        return []
+
+def obter_cursos(subpasta_id=None):
+    """Retorna cursos de uma subpasta ou todos os cursos"""
+    try:
+        if not collection_cursos:
+            return []
+        
+        query = {"ativo": True}
+        if subpasta_id:
+            query["subpasta_id"] = subpasta_id
+        
+        return list(collection_cursos.find(query).sort("data_publicacao", -1))
+    except Exception as e:
+        st.warning(f"Erro ao obter cursos: {str(e)}")
+        return []
+    
 
 # --- FUNÇÕES PARA PLAYBOOK ---
 def processar_playbook(agente_id, instrucao_usuario, base_conhecimento_atual, elemento_tipo="base_conhecimento"):
@@ -1412,7 +1496,8 @@ abas_base = [
     "💬 Chat", 
     "⚙️ Gerenciar Agentes",
     "📚 Playbook",
-    "🧠 Trilha de Conhecimento" 
+    "🧠 Trilha de Conhecimento" , 
+    "🎓 Cursos e Capacitações"
 ]
 
 if is_syn_agent(agente_selecionado['nome']):
@@ -2447,3 +2532,447 @@ with tab_mapping["🧠 Trilha de Conhecimento"]:
         
         else:
             st.info("📭 Nenhum fluxograma de conhecimento salvo ainda.")
+
+
+
+
+# --- NOVA ABA: CURSOS E CAPACITAÇÕES ---
+with tab_mapping["🎓 Cursos e Capacitações"]:
+    st.header("🎓 Biblioteca de Cursos")
+    
+    # Verificar se a conexão está disponível
+    if not collection_cursos or not collection_categorias:
+        st.error("⚠️ Conexão com banco de cursos não disponível no momento.")
+        st.info("Por favor, verifique a conexão com o MongoDB.")
+        
+        # Botão para tentar reconectar
+        if st.button("🔄 Tentar Reconectar"):
+            try:
+                # Tentar nova conexão
+                client_cursos = MongoClient(
+                    "mongodb+srv://julialedo_db_user:hr7vHI5EjMwuRT9X@cluster0.u0sm02b.mongodb.net/cursos_db?retryWrites=true&w=majority&appName=Cluster0",
+                    tls=True,
+                    tlsAllowInvalidCertificates=True,
+                    serverSelectionTimeoutMS=10000
+                )
+                db_cursos = client_cursos['cursos_db']
+                collection_cursos = db_cursos['cursos']
+                collection_categorias = db_cursos['categorias']
+                st.success("✅ Reconectado com sucesso!")
+                st.rerun()
+            except Exception as e:
+                st.error(f"❌ Falha na reconexão: {str(e)}")
+        
+        st.stop()
+    
+    st.markdown("Cursos organizados em pastas: **Categoria → Subpasta → Cursos**")
+    
+    # Abas simples
+    tab_explorar, tab_buscar, tab_admin = st.tabs(["📁 Explorar Pastas", "🔍 Buscar Cursos", "⚙️ Admin"])
+    
+    with tab_explorar:
+        # Botão para admin verificar estrutura
+        if get_current_squad() == "admin":
+            col_admin1, col_admin2 = st.columns([1, 3])
+            with col_admin1:
+                if st.button("📊 Verificar Banco", type="secondary", use_container_width=True, key="verificar_banco"):
+                    try:
+                        total_categorias = collection_categorias.count_documents({})
+                        total_cursos = collection_cursos.count_documents({})
+                        
+                        categorias = collection_categorias.count_documents({"tipo": "categoria"})
+                        subpastas = collection_categorias.count_documents({"tipo": "subpasta"})
+                        
+                        st.success(f"""
+                        **📊 Estatísticas do Banco:**
+                        - Total documentos em 'categorias': {total_categorias}
+                        - Categorias: {categorias}
+                        - Subpastas: {subpastas}
+                        - Cursos: {total_cursos}
+                        """)
+                    except Exception as e:
+                        st.error(f"Erro ao verificar banco: {str(e)}")
+        
+        st.divider()
+        
+        # Obter categorias
+        categorias = obter_categorias()
+        
+        if not categorias:
+            st.info("📭 Nenhuma pasta de cursos encontrada.")
+            st.info("Para criar a estrutura inicial, execute o script de teste.")
+            
+            # Mostrar botão para criar estrutura se for admin
+            if get_current_squad() == "admin":
+                if st.button("🚀 Criar Estrutura de Exemplo", type="primary", key="criar_estrutura"):
+                    with st.spinner("Criando estrutura..."):
+                        sucesso, mensagem = inicializar_cursos_base()
+                        if sucesso:
+                            st.success(mensagem)
+                            st.rerun()
+                        else:
+                            st.error(mensagem)
+        else:
+            # Se categoria selecionada, mostrar seu conteúdo
+            if 'categoria_selecionada' in st.session_state:
+                categoria_id = st.session_state.categoria_selecionada
+                categoria = next((c for c in categorias if c['_id'] == categoria_id), None)
+                
+                if categoria:
+                    # Cabeçalho com botão voltar
+                    col_voltar, col_titulo = st.columns([1, 5])
+                    with col_voltar:
+                        if st.button("← Voltar", use_container_width=True, key="voltar_categorias"):
+                            del st.session_state.categoria_selecionada
+                            st.rerun()
+                    with col_titulo:
+                        st.subheader(f"{categoria.get('icone', '📁')} {categoria['nome']}")
+                        st.caption(categoria.get('descricao', ''))
+                    
+                    # Obter subpastas desta categoria
+                    subpastas = obter_subpastas(categoria_id)
+                    
+                    if subpastas:
+                        for subpasta in subpastas:
+                            with st.expander(f"{subpasta.get('icone', '📂')} **{subpasta['nome']}**", expanded=True):
+                                st.write(subpasta.get('descricao', ''))
+                                
+                                # Obter cursos desta subpasta
+                                cursos = obter_cursos(subpasta['_id'])
+                                
+                                if cursos:
+                                    st.write(f"**{len(cursos)} cursos disponíveis:**")
+                                    for curso in cursos:
+                                        # Card do curso
+                                        with st.container(border=True):
+                                            col_info, col_acao = st.columns([3, 1])
+                                            
+                                            with col_info:
+                                                st.markdown(f"**{curso['titulo']}**")
+                                                st.caption(curso.get('descricao', '')[:120] + "...")
+                                                
+                                                # Metadados
+                                                col_meta1, col_meta2, col_meta3 = st.columns(3)
+                                                with col_meta1:
+                                                    st.caption(f"⏱️ {curso.get('duracao', 'N/A')}")
+                                                with col_meta2:
+                                                    st.caption(f"📊 {curso.get('nivel', 'N/A')}")
+                                                with col_meta3:
+                                                    if curso.get('tags'):
+                                                        st.caption(f"🏷️ {curso['tags'][0]}")
+                                            
+                                            with col_acao:
+                                                if curso.get('link_drive'):
+                                                    st.link_button(
+                                                        "▶️ Assistir",
+                                                        curso['link_drive'],
+                                                        use_container_width=True,
+                                                        help="Abrir vídeo no Google Drive"
+                                                    )
+                                                else:
+                                                    st.info("Em breve")
+                                        
+                                        # Espaço entre cursos
+                                        st.write("")
+                                else:
+                                    st.info("Nenhum curso disponível nesta pasta.")
+                    else:
+                        st.info("Nenhuma subpasta encontrada.")
+            else:
+                # Mostrar todas as categorias
+                st.write("### Selecione uma categoria:")
+                
+                cols = st.columns(min(len(categorias), 3))
+                
+                for idx, categoria in enumerate(categorias):
+                    with cols[idx % 3]:
+                        # Card da categoria
+                        with st.container(border=True):
+                            st.markdown(f"## {categoria.get('icone', '📁')}")
+                            st.markdown(f"**{categoria['nome']}**")
+                            st.caption(categoria.get('descricao', '')[:60] + "...")
+                            
+                            # Botão para abrir categoria
+                            if st.button("Abrir", key=f"abrir_{categoria['_id']}", use_container_width=True):
+                                st.session_state.categoria_selecionada = categoria['_id']
+                                st.rerun()
+    
+    with tab_buscar:
+        st.subheader("Buscar por Palavra-chave")
+        
+        # Campo de busca
+        busca = st.text_input("O que você quer aprender?",
+                            placeholder="Digite palavras como: Python, IA, Machine Learning...",
+                            key="campo_busca_cursos")
+        
+        col_busca1, col_busca2 = st.columns([3, 1])
+        with col_busca2:
+            buscar_btn = st.button("🔍 Buscar", type="primary", use_container_width=True, key="btn_buscar_cursos")
+        
+        # Inicializar session state para busca
+        if 'resultados_busca_cursos' not in st.session_state:
+            st.session_state.resultados_busca_cursos = None
+        if 'ultima_busca_cursos' not in st.session_state:
+            st.session_state.ultima_busca_cursos = ""
+        
+        if buscar_btn or (st.session_state.ultima_busca_cursos and st.session_state.ultima_busca_cursos == busca):
+            if busca.strip():
+                st.session_state.ultima_busca_cursos = busca
+                
+                # Busca simples em título e descrição
+                resultados = []
+                todos_cursos = obter_cursos()
+                
+                for curso in todos_cursos:
+                    if (busca.lower() in curso.get('titulo', '').lower() or 
+                        busca.lower() in curso.get('descricao', '').lower() or
+                        any(busca.lower() in tag.lower() for tag in curso.get('tags', []))):
+                        resultados.append(curso)
+                
+                st.session_state.resultados_busca_cursos = resultados
+                
+                if resultados:
+                    st.success(f"🎯 Encontrados {len(resultados)} cursos:")
+                    
+                    for curso in resultados:
+                        with st.container(border=True):
+                            col_res1, col_res2 = st.columns([3, 1])
+                            
+                            with col_res1:
+                                st.markdown(f"**{curso['titulo']}**")
+                                st.caption(curso.get('descricao', ''))
+                                
+                                # Informações rápidas
+                                col_info1, col_info2, col_info3 = st.columns(3)
+                                with col_info1:
+                                    st.caption(f"📊 {curso.get('nivel', '')}")
+                                with col_info2:
+                                    st.caption(f"⏱️ {curso.get('duracao', '')}")
+                                with col_info3:
+                                    if curso.get('tags'):
+                                        st.caption(f"🏷️ {curso['tags'][0]}")
+                            
+                            with col_res2:
+                                if curso.get('link_drive'):
+                                    st.link_button(
+                                        "▶️ Assistir",
+                                        curso['link_drive'],
+                                        use_container_width=True,
+                                        help="Abrir vídeo no Google Drive"
+                                    )
+                                else:
+                                    st.info("Em breve", help="Link não disponível")
+                        
+                        st.write("")
+                else:
+                    st.info("😕 Nenhum curso encontrado. Tente outras palavras-chave.")
+                    
+                    # Sugestões de busca
+                    st.info("💡 **Sugestões:** Python, IA, Machine Learning, Data Science, Marketing, Instagram")
+            else:
+                st.warning("⚠️ Digite algo para buscar.")
+        elif st.session_state.resultados_busca_cursos:
+            # Mostrar resultados anteriores
+            resultados = st.session_state.resultados_busca_cursos
+            if resultados:
+                st.info(f"📚 Mostrando {len(resultados)} cursos da busca anterior")
+                
+                for curso in resultados:
+                    with st.container(border=True):
+                        col_res1, col_res2 = st.columns([3, 1])
+                        
+                        with col_res1:
+                            st.markdown(f"**{curso['titulo']}**")
+                            st.caption(curso.get('descricao', ''))
+                            
+                            col_info1, col_info2, col_info3 = st.columns(3)
+                            with col_info1:
+                                st.caption(f"📊 {curso.get('nivel', '')}")
+                            with col_info2:
+                                st.caption(f"⏱️ {curso.get('duracao', '')}")
+                            with col_info3:
+                                if curso.get('tags'):
+                                    st.caption(f"🏷️ {curso['tags'][0]}")
+                        
+                        with col_res2:
+                            if curso.get('link_drive'):
+                                st.link_button(
+                                    "▶️ Assistir",
+                                    curso['link_drive'],
+                                    use_container_width=True,
+                                    help="Abrir vídeo no Google Drive"
+                                )
+        
+        # Se não há busca ativa, mostrar alguns cursos aleatórios
+        if not st.session_state.get('ultima_busca_cursos'):
+            st.divider()
+            st.subheader("📚 Cursos em Destaque")
+            
+            todos_cursos = obter_cursos()
+            if todos_cursos:
+                # Mostrar até 3 cursos
+                cursos_destaque = todos_cursos[:3]
+                
+                for curso in cursos_destaque:
+                    with st.container(border=True):
+                        col_dest1, col_dest2 = st.columns([3, 1])
+                        
+                        with col_dest1:
+                            st.markdown(f"**{curso['titulo']}**")
+                            st.caption(curso.get('descricao', '')[:100] + "...")
+                            
+                            col_meta1, col_meta2 = st.columns(2)
+                            with col_meta1:
+                                st.caption(f"⏱️ {curso.get('duracao', '')}")
+                            with col_meta2:
+                                st.caption(f"📊 {curso.get('nivel', '')}")
+                        
+                        with col_dest2:
+                            if curso.get('link_drive'):
+                                st.link_button(
+                                    "▶️ Assistir",
+                                    curso['link_drive'],
+                                    use_container_width=True,
+                                    help="Abrir vídeo no Google Drive"
+                                )
+    
+    with tab_admin:
+        st.subheader("⚙️ Configurações de Administrador")
+        
+        if get_current_squad() != "admin":
+            st.warning("⚠️ Acesso restrito a administradores.")
+            st.stop()
+        
+        col_stats1, col_stats2, col_stats3 = st.columns(3)
+        
+        with col_stats1:
+            try:
+                total_categorias = collection_categorias.count_documents({})
+                st.metric("📁 Categorias/Subpastas", total_categorias)
+            except:
+                st.metric("📁 Categorias/Subpastas", "N/A")
+        
+        with col_stats2:
+            try:
+                total_cursos = collection_cursos.count_documents({})
+                st.metric("🎓 Cursos", total_cursos)
+            except:
+                st.metric("🎓 Cursos", "N/A")
+        
+        with col_stats3:
+            try:
+                categorias_count = collection_categorias.count_documents({"tipo": "categoria"})
+                st.metric("📂 Categorias", categorias_count)
+            except:
+                st.metric("📂 Categorias", "N/A")
+        
+        st.divider()
+        
+        # Botões de administração
+        col_admin_btn1, col_admin_btn2, col_admin_btn3 = st.columns(3)
+        
+        with col_admin_btn1:
+            if st.button("🔄 Recriar Estrutura", type="secondary", use_container_width=True, key="recriar_estrutura"):
+                try:
+                    # Limpar coleções
+                    collection_categorias.delete_many({})
+                    collection_cursos.delete_many({})
+                    
+                    # Executar script de criação (simplificado)
+                    from datetime import datetime
+                    
+                    # Criar estrutura básica
+                    categoria_tech = {
+                        "_id": "tech",
+                        "tipo": "categoria",
+                        "nome": "Tecnologia",
+                        "descricao": "Cursos de tecnologia e inovação",
+                        "icone": "💻",
+                        "ordem": 1,
+                        "ativo": True,
+                        "data_criacao": datetime.now()
+                    }
+                    
+                    subpasta_ia = {
+                        "_id": "inteligencia-artificial",
+                        "tipo": "subpasta",
+                        "categoria_id": "tech",
+                        "nome": "Inteligência Artificial",
+                        "descricao": "Cursos sobre IA, machine learning e deep learning",
+                        "icone": "🤖",
+                        "ordem": 1,
+                        "ativo": True,
+                        "data_criacao": datetime.now()
+                    }
+                    
+                    collection_categorias.insert_many([categoria_tech, subpasta_ia])
+                    
+                    # Criar curso exemplo
+                    curso_ia = {
+                        "_id": "ia-basica",
+                        "categoria_id": "tech",
+                        "subpasta_id": "inteligencia-artificial",
+                        "titulo": "Introdução à Inteligência Artificial",
+                        "descricao": "Aprenda os conceitos fundamentais de IA",
+                        "tipo": "video",
+                        "link_drive": "https://drive.google.com/file/d/1sC5q5Yw6X4ABC123XYZ/view?usp=sharing",
+                        "duracao": "2 horas",
+                        "nivel": "Iniciante",
+                        "tags": ["IA", "Machine Learning", "Python"],
+                        "autor": "Equipe de IA",
+                        "data_publicacao": datetime.now(),
+                        "ativo": True
+                    }
+                    
+                    collection_cursos.insert_one(curso_ia)
+                    
+                    st.success("✅ Estrutura recriada com sucesso!")
+                    st.rerun()
+                    
+                except Exception as e:
+                    st.error(f"❌ Erro ao recriar estrutura: {str(e)}")
+        
+        with col_admin_btn2:
+            if st.button("🗑️ Limpar Banco", type="secondary", use_container_width=True, key="limpar_banco"):
+                if st.checkbox("⚠️ Confirmar exclusão de TODOS os dados de cursos?", key="confirmar_limpeza"):
+                    try:
+                        collection_categorias.delete_many({})
+                        collection_cursos.delete_many({})
+                        st.success("✅ Banco limpo com sucesso!")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"❌ Erro ao limpar banco: {str(e)}")
+        
+        with col_admin_btn3:
+            if st.button("📋 Ver Dados Brutos", type="secondary", use_container_width=True, key="ver_dados_brutos"):
+                try:
+                    with st.expander("📁 Dados da Coleção 'categorias'", expanded=False):
+                        categorias_raw = list(collection_categorias.find({}))
+                        if categorias_raw:
+                            for cat in categorias_raw:
+                                st.json({
+                                    "_id": str(cat.get("_id")),
+                                    "tipo": cat.get("tipo"),
+                                    "nome": cat.get("nome"),
+                                    "categoria_id": cat.get("categoria_id"),
+                                    "ativo": cat.get("ativo")
+                                })
+                        else:
+                            st.info("Nenhum dado encontrado")
+                    
+                    with st.expander("🎓 Dados da Coleção 'cursos'", expanded=False):
+                        cursos_raw = list(collection_cursos.find({}))
+                        if cursos_raw:
+                            for curso in cursos_raw:
+                                st.json({
+                                    "_id": str(curso.get("_id")),
+                                    "titulo": curso.get("titulo"),
+                                    "categoria_id": curso.get("categoria_id"),
+                                    "subpasta_id": curso.get("subpasta_id"),
+                                    "ativo": curso.get("ativo")
+                                })
+                        else:
+                            st.info("Nenhum dado encontrado")
+                            
+                except Exception as e:
+                    st.error(f"❌ Erro ao obter dados brutos: {str(e)}")
