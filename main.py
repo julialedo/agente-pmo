@@ -117,6 +117,7 @@ try:
 except Exception as e:
     st.error(f"❌ Erro na conexão com banco de cursos: {str(e)}")
     # Criar variáveis vazias para evitar erros
+    client_cursos = None
     db_cursos = None
     collection_cursos = None
     collection_categorias = None
@@ -2774,7 +2775,7 @@ with tab_mapping["🎓 Cursos e Capacitações"]:
     st.header("🎓 Biblioteca de Cursos")
     
     # Verificar se a conexão está disponível
-    if not collection_cursos or not collection_categorias:
+    if 'collection_cursos' not in globals() or collection_cursos is None:
         st.error("⚠️ Conexão com banco de cursos não disponível no momento.")
         st.info("Por favor, verifique a conexão com o MongoDB.")
         
