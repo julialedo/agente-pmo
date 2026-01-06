@@ -21,6 +21,16 @@ from pypdf import PdfReader, PdfWriter
 from pypdf.annotations import Text
 import requests
 from dotenv import load_dotenv
+# Adicione estas importações após as outras importações
+import networkx as nx
+import matplotlib.pyplot as plt
+import graphviz
+from graphviz import Digraph
+import tempfile
+import base64
+from io import BytesIO
+import matplotlib.patches as patches
+import numpy as np
 
 load_dotenv()
 
@@ -904,6 +914,431 @@ FORMATO PRINCIPAL: {formato_principal}
 """
     return briefing
 
+# --- FUNÇÕES PARA TRILHA DE CONHECIMENTO (COM FLUXOGRAMA) ---
+def generate_knowledge_flowchart(nome, equipe, funcao, cargo, tasks_exemplo, modelo="gemini"):
+    """Gera uma trilha de conhecimento como FLUXOGRAMA profissional"""
+    if not gemini_api_key:
+        return None, None, "❌ API key do Gemini não configurada."
+    
+    try:
+        prompt = f"""
+        Você é um especialista em Desenvolvimento Organizacional e Design Instrucional.
+        Crie uma TRILHA DE CONHECIMENTO como FLUXOGRAMA para:
+        
+        NOME: {nome}
+        EQUIPE: {equipe}
+        FUNÇÃO: {funcao}
+        CARGO: {cargo}
+        EXEMPLO DE TASKS: {tasks_exemplo}
+        
+        ### ESTRUTURA DO FLUXOGRAMA:
+        1. INÍCIO: Ponto de partida
+        2. FUNDAMENTOS: 2-3 módulos básicos
+        3. NÚCLEO: 3-4 módulos principais da função
+        4. APLICAÇÃO: 2-3 módulos práticos
+        5. PROJETOS: 1-2 projetos reais
+        6. AVALIAÇÃO: Checkpoints e provas
+        7. CERTIFICAÇÃO: Finalização
+        
+        ### FORMATO DE SAÍDA (JSON):
+        {{
+            "trilha_info": {{
+                "titulo": "Trilha de {funcao}",
+                "objetivo": "Texto do objetivo",
+                "duracao": "X semanas",
+                "publico_alvo": "{cargo}",
+                "pre_requisitos": ["item1", "item2"]
+            }},
+            "fluxograma": {{
+                "niveis": [
+                    {{
+                        "nome": "FUNDAMENTOS",
+                        "posicao": 1,
+                        "modulos": [
+                            {{
+                                "id": "F1",
+                                "titulo": "Introdução a {funcao}",
+                                "tipo": "teoria",
+                                "duracao": "2h",
+                                "descricao": "Descrição detalhada",
+                                "recursos": ["link1", "link2"]
+                            }}
+                        ]
+                    }}
+                ]
+            }},
+            "conexoes": [
+                {{
+                    "de": "F1",
+                    "para": "F2",
+                    "tipo": "obrigatoria"
+                }}
+            ],
+            "checkpoints": [
+                {{
+                    "id": "CP1",
+                    "posicao": "apos FUNDAMENTOS",
+                    "tipo": "prova",
+                    "peso": "20%"
+                }}
+            ],
+            "texto_descritivo": "Texto explicativo em markdown..."
+        }}
+        
+        ### REGRAS:
+        - Máximo 12 módulos
+        - Organize em 4-5 níveis verticais
+        - Inclua decisões (sim/não) para diferentes caminhos
+        - Adicione loops de feedback
+        - Seja prático e realista
+        """
+        
+        if modelo == "gemini":
+            response = modelo_texto.generate_content(prompt)
+            response_text = response.text
+        else:
+            message = anthropic_client.messages.create(
+                max_tokens=4000,
+                messages=[{"role": "user", "content": prompt}],
+                model="claude-haiku-4-5-20241022",
+                system="Você é um especialista em design instrucional. Retorne JSON válido."
+            )
+            response_text = message.content[0].text
+        
+        # Extrair JSON
+        import json
+        import re
+        
+        json_match = re.search(r'(\{.*\})', response_text, re.DOTALL)
+        if json_match:
+            try:
+                data = json.loads(json_match.group(1))
+                texto_descritivo = data.get("texto_descritivo", response_text)
+                
+                # Gerar fluxograma visual
+                flowchart_image = create_flowchart_diagram(data, nome, funcao)
+                
+                return data, flowchart_image, texto_descritivo
+            except:
+                # Criar fluxograma genérico
+                texto_descritivo = response_text
+                flowchart_image = create_generic_flowchart(nome, funcao, tasks_exemplo)
+                return None, flowchart_image, texto_descritivo
+        else:
+            texto_descritivo = response_text
+            flowchart_image = create_generic_flowchart(nome, funcao, tasks_exemplo)
+            return None, flowchart_image, texto_descritivo
+            
+    except Exception as e:
+        return None, None, f"❌ Erro ao gerar fluxograma: {str(e)}"
+
+def create_flowchart_diagram(data, nome, funcao):
+    """Cria um fluxograma visual profissional a partir dos dados"""
+    try:
+        # Configurar figura
+        fig, ax = plt.subplots(figsize=(14, 10))
+        ax.set_xlim(0, 10)
+        ax.set_ylim(0, 12)
+        ax.axis('off')
+        
+        # Cores para diferentes tipos
+        color_map = {
+            'teoria': '#4A90E2',      # Azul para teoria
+            'pratica': '#50C878',     # Verde para prática
+            'projeto': '#FFD700',     # Amarelo para projeto
+            'prova': '#FF6B6B',       # Vermelho para prova
+            'decisao': '#9B59B6',     # Roxo para decisão
+            'inicio': '#2ECC71',      # Verde claro para início
+            'fim': '#E74C3C'          # Vermelho para fim
+        }
+        
+        # Posicionamento dos níveis
+        niveis = data.get("fluxograma", {}).get("niveis", [])
+        
+        modules_by_level = {}
+        y_positions = {}
+        
+        # Organizar módulos por nível
+        for i, nivel in enumerate(niveis):
+            level_name = nivel.get("nome", f"Nível {i+1}")
+            modules = nivel.get("modulos", [])
+            
+            # Posição Y para este nível (mais alto = mais no topo)
+            y_base = 10 - (i * 2.2)
+            modules_by_level[level_name] = {
+                'modules': modules,
+                'y': y_base
+            }
+        
+        # Desenhar módulos
+        module_positions = {}  # Para guardar posições dos módulos
+        module_by_id = {}      # Para mapear ID -> dados do módulo
+        
+        for level_name, level_data in modules_by_level.items():
+            modules = level_data['modules']
+            y = level_data['y']
+            
+            # Número de módulos neste nível
+            num_modules = len(modules)
+            
+            # Calcular espaçamento horizontal
+            if num_modules > 0:
+                spacing = 8.0 / (num_modules + 1)
+                
+                for j, modulo in enumerate(modules):
+                    x = 1 + (j + 1) * spacing
+                    module_id = modulo.get("id", f"M{j}")
+                    title = modulo.get("titulo", "Módulo")
+                    tipo = modulo.get("tipo", "teoria")
+                    
+                    # Guardar posição para conexões
+                    module_positions[module_id] = (x, y)
+                    module_by_id[module_id] = {
+                        'x': x,
+                        'y': y,
+                        'tipo': tipo,
+                        'nivel': level_name
+                    }
+                    
+                    # Cor baseada no tipo
+                    color = color_map.get(tipo, '#4A90E2')
+                    
+                    # Desenhar caixa do módulo
+                    if tipo == 'decisao':
+                        # Losango para decisões
+                        diamond = patches.RegularPolygon(
+                            (x, y), 4, radius=0.5,
+                            orientation=np.pi/4,
+                            facecolor=color, alpha=0.8,
+                            edgecolor='black', linewidth=2
+                        )
+                        ax.add_patch(diamond)
+                        # Texto dentro do losango
+                        ax.text(x, y, f"{module_id}\n{title[:15]}", 
+                               ha='center', va='center', fontsize=8, fontweight='bold')
+                    else:
+                        # Retângulo para outros módulos
+                        rect = patches.FancyBboxPatch(
+                            (x-0.6, y-0.3), 1.2, 0.6,
+                            boxstyle="round,pad=0.1",
+                            facecolor=color, alpha=0.8,
+                            edgecolor='black', linewidth=2
+                        )
+                        ax.add_patch(rect)
+                        # Texto dentro do retângulo
+                        ax.text(x, y, f"{module_id}\n{title[:20]}", 
+                               ha='center', va='center', fontsize=8, fontweight='bold')
+                    
+                    # Adicionar ícone baseado no tipo
+                    icon = get_icon_for_type(tipo)
+                    ax.text(x, y+0.4, icon, ha='center', va='center', fontsize=12)
+        
+        # Desenhar conexões - ORDEM CORRIGIDA
+        # Primeiro organizar conexões por nível para evitar sobreposição
+        conexoes = data.get("conexoes", [])
+        
+        # Agrupar conexões por nível de origem
+        conexoes_ordenadas = []
+        for conexao in conexoes:
+            de = conexao.get("de")
+            para = conexao.get("para")
+            
+            if de in module_by_id and para in module_by_id:
+                nivel_de = module_by_id[de]['nivel']
+                nivel_para = module_by_id[para]['nivel']
+                
+                # Calcular "distância" entre níveis
+                niveis_list = list(modules_by_level.keys())
+                if nivel_de in niveis_list and nivel_para in niveis_list:
+                    indice_de = niveis_list.index(nivel_de)
+                    indice_para = niveis_list.index(nivel_para)
+                    distancia = abs(indice_para - indice_de)
+                    
+                    conexoes_ordenadas.append({
+                        'conexao': conexao,
+                        'distancia': distancia,
+                        'nivel_de': indice_de,
+                        'nivel_para': indice_para
+                    })
+        
+        # Ordenar conexões: primeiro as mais curtas, depois as mais longas
+        conexoes_ordenadas.sort(key=lambda x: x['distancia'])
+        
+        # Desenhar conexões ordenadas
+        for item in conexoes_ordenadas:
+            conexao = item['conexao']
+            de = conexao.get("de")
+            para = conexao.get("para")
+            tipo = conexao.get("tipo", "obrigatoria")
+            
+            if de in module_positions and para in module_positions:
+                x1, y1 = module_positions[de]
+                x2, y2 = module_positions[para]
+                
+                # CORREÇÃO: Ajustar pontos de conexão baseado no tipo de módulo
+                if module_by_id[de]['tipo'] == 'decisao':
+                    # Para losangos, conectar das laterais
+                    if x2 > x1:  # Módulo destino à direita
+                        x1 += 0.5
+                    else:  # Módulo destino à esquerda
+                        x1 -= 0.5
+                else:
+                    # Para retângulos, conectar da base
+                    y1 -= 0.3
+                
+                if module_by_id[para]['tipo'] == 'decisao':
+                    # Para losangos, conectar nas laterais
+                    if x2 > x1:  # Vindo da esquerda
+                        x2 -= 0.5
+                    else:  # Vindo da direita
+                        x2 += 0.5
+                else:
+                    # Para retângulos, conectar no topo
+                    y2 += 0.3
+                
+                # Estilo da seta baseado no tipo
+                if tipo == 'opcional':
+                    linestyle = 'dashed'
+                    color = 'gray'
+                    arrowstyle = '-|>'
+                elif tipo == 'feedback':
+                    linestyle = 'dotted'
+                    color = 'orange'
+                    arrowstyle = '<|-|>'
+                else:
+                    linestyle = 'solid'
+                    color = 'black'
+                    arrowstyle = '->'
+                
+                # Calcular curvatura baseado na distância horizontal
+                dx = abs(x2 - x1)
+                rad = 0.2 if dx < 2 else 0.3
+                
+                # Desenhar linha com seta
+                ax.annotate('', xy=(x2, y2), xytext=(x1, y1),
+                          arrowprops=dict(arrowstyle=arrowstyle,
+                                        color=color,
+                                        linestyle=linestyle,
+                                        linewidth=1.5,
+                                        connectionstyle=f"arc3,rad={rad}"))
+        
+        # Adicionar título
+        titulo = data.get("trilha_info", {}).get("titulo", f"Trilha de {funcao}")
+        ax.text(5, 11.5, titulo, ha='center', va='center', 
+               fontsize=16, fontweight='bold', color='#2C3E50')
+        
+        # Adicionar informações do colaborador
+        info_text = f"Colaborador: {nome} | Cargo: {funcao}"
+        ax.text(5, 11.0, info_text, ha='center', va='center', 
+               fontsize=10, color='#34495E')
+        
+        # Adicionar legenda
+        legend_x = 0.5
+        legend_y = 0.5
+        legend_elements = [
+            patches.Patch(facecolor=color_map['teoria'], label='Teoria/Aula', alpha=0.8),
+            patches.Patch(facecolor=color_map['pratica'], label='Prática', alpha=0.8),
+            patches.Patch(facecolor=color_map['projeto'], label='Projeto', alpha=0.8),
+            patches.Patch(facecolor=color_map['prova'], label='Avaliação', alpha=0.8),
+            patches.Patch(facecolor=color_map['decisao'], label='Decisão', alpha=0.8),
+        ]
+        
+        ax.legend(handles=legend_elements, loc='lower left', 
+                 bbox_to_anchor=(0.02, 0.02), fontsize=9)
+        
+        # Adicionar níveis como rótulos na esquerda
+        for i, (level_name, level_data) in enumerate(modules_by_level.items()):
+            y = level_data['y']
+            ax.text(0.3, y, level_name, ha='right', va='center',
+                   fontsize=10, fontweight='bold', color='#2C3E50',
+                   bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.7))
+        
+        plt.tight_layout()
+        
+        # Salvar em buffer
+        buf = BytesIO()
+        plt.savefig(buf, format='png', dpi=150, bbox_inches='tight', pad_inches=0.5)
+        buf.seek(0)
+        plt.close()
+        
+        return buf
+        
+    except Exception as e:
+        st.error(f"Erro ao criar fluxograma: {str(e)}")
+        # Em caso de erro, criar fluxograma genérico
+        return create_generic_flowchart(nome, funcao, "")
+
+
+
+
+
+
+def get_icon_for_type(tipo):
+    """Retorna emoji baseado no tipo de módulo"""
+    icons = {
+        'teoria': '📚',
+        'pratica': '🔧',
+        'projeto': '🎯',
+        'prova': '📝',
+        'decisao': '🤔',
+        'inicio': '🚀',
+        'fim': '🏆',
+        'feedback': '🔄'
+    }
+    return icons.get(tipo, '📌')
+
+def save_flowchart_to_db(nome, equipe, funcao, cargo, tasks, data_fluxograma, flowchart_image, texto_descritivo):
+    """Salva o fluxograma no MongoDB"""
+    try:
+        # Converter imagem para base64 para salvar no MongoDB
+        flowchart_base64 = None
+        if flowchart_image:
+            flowchart_image.seek(0)
+            flowchart_base64 = base64.b64encode(flowchart_image.read()).decode('utf-8')
+        
+        trilha_doc = {
+            "nome_colaborador": nome,
+            "equipe": equipe,
+            "funcao": funcao,
+            "cargo": cargo,
+            "tasks_exemplo": tasks,
+            "data_fluxograma": data_fluxograma,
+            "fluxograma_imagem": flowchart_base64,
+            "texto_descritivo": texto_descritivo,
+            "criado_por": get_current_user().get('email', 'unknown'),
+            "squad": get_current_squad(),
+            "data_criacao": datetime.datetime.now(),
+            "tipo": "fluxograma",
+            "status": "ativo"
+        }
+        
+        # Criar uma coleção específica para trilhas
+        collection_trilhas = db['trilhas_conhecimento']
+        result = collection_trilhas.insert_one(trilha_doc)
+        
+        return True, f"✅ Fluxograma salvo com ID: {result.inserted_id}"
+        
+    except Exception as e:
+        return False, f"❌ Erro ao salvar fluxograma: {str(e)}"
+
+def get_knowledge_paths(limit=10):
+    """Obtém trilhas/fluxogramas de conhecimento salvas"""
+    try:
+        collection_trilhas = db['trilhas_conhecimento']
+        return list(collection_trilhas.find(
+            {"status": "ativo", "squad": get_current_squad()}
+        ).sort("data_criacao", -1).limit(limit))
+    except:
+        # Se a coleção não existir, criar
+        try:
+            db.create_collection('trilhas_conhecimento')
+            return []
+        except:
+            return []
+
+
+
+
 # --- Interface Principal ---
 st.sidebar.title(f"🤖 Bem-vindo, {get_current_user().get('nome', 'Usuário')}!")
 st.sidebar.info(f"**Squad:** {get_current_squad()}")
@@ -976,7 +1411,8 @@ if agentes:
 abas_base = [
     "💬 Chat", 
     "⚙️ Gerenciar Agentes",
-    "📚 Playbook" 
+    "📚 Playbook",
+    "🧠 Trilha de Conhecimento" 
 ]
 
 if is_syn_agent(agente_selecionado['nome']):
@@ -1763,3 +2199,251 @@ with tab_mapping["📚 Playbook"]:
                 4. **Use o histórico**: Todas as alterações são registradas e podem ser revertidas
                 """)
 
+# --- NOVA ABA: TRILHA DE CONHECIMENTO (COM FLUXOGRAMA) ---
+with tab_mapping["🧠 Trilha de Conhecimento"]:
+    st.header("🧠 Gerador de Trilha de Conhecimento")
+    st.markdown("Crie trilhas personalizadas de aprendizado com **fluxogramas visuais**")
+    
+    # Abas dentro da trilha de conhecimento
+    trilha_tab1, trilha_tab2 = st.tabs(["🔄 Gerar Novo Fluxograma", "📚 Fluxogramas Salvos"])
+    
+    with trilha_tab1:
+        st.subheader("Informações do Colaborador")
+        
+        # Exemplo rápido para testar
+        with st.expander("💡 Exemplo Rápido para Testar", expanded=False):
+            col_ex1, col_ex2 = st.columns(2)
+            with col_ex1:
+                if st.button("👨‍💻 Exemplo Desenvolvedor"):
+                    st.session_state.exemplo_preenchido = {
+                        "nome": "Carlos Silva",
+                        "equipe": "Desenvolvimento Frontend",
+                        "funcao": "Desenvolvedor React",
+                        "cargo": "Pleno",
+                        "tasks": """- Desenvolvimento de componentes React
+- Integração com APIs REST
+- Otimização de performance
+- Code review com equipe júnior
+- Testes unitários e integração"""
+                    }
+                    st.success("Exemplo carregado! Os campos foram preenchidos automaticamente.")
+                    
+            with col_ex2:
+                if st.button("📊 Exemplo Analista"):
+                    st.session_state.exemplo_preenchido = {
+                        "nome": "Ana Santos",
+                        "equipe": "Análise de Dados",
+                        "funcao": "Analista de BI",
+                        "cargo": "Sênior",
+                        "tasks": """- Modelagem de dados
+- Criação de dashboards
+- Análise de métricas
+- Relatórios executivos
+- Treinamento de equipe"""
+                    }
+                    st.success("Exemplo carregado! Os campos foram preenchidos automaticamente.")
+        
+        with st.form("form_fluxograma_conhecimento"):
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                # Preencher com exemplo se existir
+                nome_val = ""
+                equipe_val = ""
+                if 'exemplo_preenchido' in st.session_state:
+                    nome_val = st.session_state.exemplo_preenchido["nome"]
+                    equipe_val = st.session_state.exemplo_preenchido["equipe"]
+                
+                nome = st.text_input("Nome do Colaborador:", 
+                                    value=nome_val,
+                                    placeholder="João Silva")
+                equipe = st.text_input("Equipe/Squad:", 
+                                      value=equipe_val,
+                                      placeholder="Marketing Digital")
+                
+            with col2:
+                # Preencher com exemplo se existir
+                funcao_val = ""
+                cargo_val = ""
+                if 'exemplo_preenchido' in st.session_state:
+                    funcao_val = st.session_state.exemplo_preenchido["funcao"]
+                    cargo_val = st.session_state.exemplo_preenchido["cargo"]
+                
+                funcao = st.text_input("Função Principal:", 
+                                      value=funcao_val,
+                                      placeholder="Analista de Mídias Sociais")
+                cargo = st.text_input("Cargo/Hierarquia:", 
+                                     value=cargo_val,
+                                     placeholder="Analista Júnior")
+            
+            # Preencher tasks com exemplo se existir
+            tasks_val = ""
+            if 'exemplo_preenchido' in st.session_state:
+                tasks_val = st.session_state.exemplo_preenchido["tasks"]
+            
+            tasks_exemplo = st.text_area(
+                "Exemplos de Tasks/Responsabilidades:",
+                value=tasks_val,
+                height=150,
+                placeholder="Ex: Criar conteúdo para Instagram, analisar métricas de engajamento, responder comentários, criar relatórios semanais...",
+                help="Descreva as principais atividades do colaborador"
+            )
+            
+            modelo_ai = st.selectbox(
+                "Modelo de IA para gerar:",
+                ["Gemini", "Claude"],
+                help="Escolha qual modelo de IA usar para gerar o fluxograma"
+            )
+            
+            col_btn1, col_btn2, col_btn3 = st.columns(3)
+            with col_btn1:
+                preview_btn = st.form_submit_button("👁️ Pré-visualizar", type="secondary")
+            with col_btn2:
+                gerar_btn = st.form_submit_button("🎯 Gerar Fluxograma", type="primary")
+            with col_btn3:
+                salvar_btn = st.form_submit_button("💾 Gerar e Salvar", type="primary")
+        
+        # Processar ações dos botões
+        if preview_btn or gerar_btn or salvar_btn:
+            if not all([nome, equipe, funcao, cargo, tasks_exemplo]):
+                st.error("❌ Por favor, preencha todos os campos!")
+            else:
+                with st.spinner("🧠 Gerando fluxograma de conhecimento..."):
+                    data_fluxograma, flowchart_image, texto_descritivo = generate_knowledge_flowchart(
+                        nome=nome,
+                        equipe=equipe,
+                        funcao=funcao,
+                        cargo=cargo,
+                        tasks_exemplo=tasks_exemplo,
+                        modelo=modelo_ai.lower()
+                    )
+                    
+                    if flowchart_image and texto_descritivo and not texto_descritivo.startswith("❌"):
+                        st.success("✅ Fluxograma gerado com sucesso!")
+                        
+                        # Colunas para exibir fluxograma e texto
+                        col_fluxo, col_texto = st.columns([2, 1])
+                        
+                        with col_fluxo:
+                            st.subheader("📊 Fluxograma da Trilha de Conhecimento")
+                            st.image(flowchart_image, use_container_width=True)
+                            
+                            # Botões de download
+                            col_dl1, col_dl2 = st.columns(2)
+                            with col_dl1:
+                                flowchart_image.seek(0)
+                                st.download_button(
+                                    label="📥 Baixar Fluxograma (PNG)",
+                                    data=flowchart_image,
+                                    file_name=f"fluxograma_{nome}_{datetime.datetime.now().strftime('%Y%m%d')}.png",
+                                    mime="image/png"
+                                )
+                            with col_dl2:
+                                if data_fluxograma:
+                                    st.download_button(
+                                        label="📊 Baixar Dados (JSON)",
+                                        data=json.dumps(data_fluxograma, indent=2, ensure_ascii=False),
+                                        file_name=f"dados_fluxograma_{nome}.json",
+                                        mime="application/json"
+                                    )
+                        
+                        with col_texto:
+                            st.subheader("📝 Descrição da Trilha")
+                            with st.expander("Ver descrição completa", expanded=True):
+                                st.markdown(texto_descritivo)
+                        
+                        # Mostrar dados estruturados se disponíveis
+                        if data_fluxograma:
+                            with st.expander("🔍 Dados Estruturados", expanded=False):
+                                st.json(data_fluxograma)
+                        
+                        # Salvar se solicitado
+                        if salvar_btn:
+                            sucesso, mensagem = save_flowchart_to_db(
+                                nome, equipe, funcao, cargo, tasks_exemplo, 
+                                data_fluxograma, flowchart_image, texto_descritivo
+                            )
+                            if sucesso:
+                                st.success(mensagem)
+                            else:
+                                st.error(mensagem)
+                    else:
+                        st.error(texto_descritivo)
+    
+    with trilha_tab2:
+        st.subheader("📚 Fluxogramas Salvos")
+        
+        # Carregar fluxogramas salvos
+        fluxogramas_salvos = get_knowledge_paths(limit=20)
+        
+        if fluxogramas_salvos:
+            for i, fluxograma in enumerate(fluxogramas_salvos):
+                with st.expander(f"{fluxograma.get('nome_colaborador', 'N/A')} - {fluxograma.get('equipe', 'N/A')} - {fluxograma.get('data_criacao', 'N/A').strftime('%d/%m/%Y')}", 
+                               expanded=False):
+                    
+                    col_fs1, col_fs2, col_fs3 = st.columns([3, 1, 1])
+                    
+                    with col_fs1:
+                        st.write(f"**Cargo:** {fluxograma.get('cargo', 'N/A')}")
+                        st.write(f"**Função:** {fluxograma.get('funcao', 'N/A')}")
+                        st.write(f"**Criado por:** {fluxograma.get('criado_por', 'N/A')}")
+                    
+                    with col_fs2:
+                        if st.button("👀 Ver", key=f"ver_fluxograma_{i}"):
+                            st.session_state.fluxograma_selecionado = fluxograma
+                    
+                    with col_fs3:
+                        if st.button("📥 Exportar", key=f"export_fluxograma_{i}"):
+                            # Criar arquivo para download
+                            if fluxograma.get('fluxograma_imagem'):
+                                # Decodificar imagem base64
+                                img_data = base64.b64decode(fluxograma['fluxograma_imagem'])
+                                st.download_button(
+                                    label="Baixar Fluxograma",
+                                    data=img_data,
+                                    file_name=f"fluxograma_{fluxograma.get('nome_colaborador', 'fluxograma')}.png",
+                                    mime="image/png",
+                                    key=f"download_img_{i}"
+                                )
+            
+            # Modal para visualizar fluxograma selecionado
+            if 'fluxograma_selecionado' in st.session_state and st.session_state.fluxograma_selecionado:
+                st.subheader("📋 Fluxograma de Conhecimento Detalhado")
+                fluxograma = st.session_state.fluxograma_selecionado
+                
+                col_det1, col_det2 = st.columns([2, 1])
+                
+                with col_det1:
+                    st.write(f"**Colaborador:** {fluxograma.get('nome_colaborador', 'N/A')}")
+                    st.write(f"**Equipe:** {fluxograma.get('equipe', 'N/A')}")
+                    st.write(f"**Cargo:** {fluxograma.get('cargo', 'N/A')}")
+                    st.write(f"**Função:** {fluxograma.get('funcao', 'N/A')}")
+                    
+                    # Mostrar imagem do fluxograma se existir
+                    if fluxograma.get('fluxograma_imagem'):
+                        st.subheader("📊 Fluxograma da Trilha")
+                        img_data = base64.b64decode(fluxograma['fluxograma_imagem'])
+                        img = BytesIO(img_data)
+                        st.image(img, use_container_width=True)
+                
+                with col_det2:
+                    with st.expander("📝 Tasks/Responsabilidades", expanded=False):
+                        st.write(fluxograma.get('tasks_exemplo', 'N/A'))
+                    
+                    with st.expander("📋 Metadados", expanded=False):
+                        st.write(f"**Data de Criação:** {fluxograma.get('data_criacao', 'N/A').strftime('%d/%m/%Y %H:%M')}")
+                        st.write(f"**Squad:** {fluxograma.get('squad', 'N/A')}")
+                        st.write(f"**Tipo:** {fluxograma.get('tipo', 'fluxograma')}")
+                
+                if fluxograma.get('texto_descritivo'):
+                    with st.expander("📄 Descrição da Trilha", expanded=True):
+                        st.markdown(fluxograma['texto_descritivo'])
+                
+                col_btn_close, _ = st.columns([1, 3])
+                with col_btn_close:
+                    if st.button("Fechar Visualização"):
+                        st.session_state.fluxograma_selecionado = None
+                        st.rerun()
+        
+        else:
+            st.info("📭 Nenhum fluxograma de conhecimento salvo ainda.")
